@@ -1,0 +1,4 @@
+-- app_settings table (already created in 20260518200052 migration).
+-- This migration originally duplicated the CREATE TABLE without IF NOT EXISTS
+-- which caused an error on fresh databases. The table and its policies are
+-- already fully defined in the previous migration — nothing to do here.

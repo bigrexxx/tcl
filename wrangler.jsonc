@@ -1,0 +1,20 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tcl-babcock-hub",
+  "compatibility_date": "2025-09-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "src/server.ts",
+
+  // Environment variables set here are available at runtime on Cloudflare.
+  // Secret values (API keys, passwords) must be added via:
+  //   wrangler secret put RESEND_API_KEY
+  //   wrangler secret put ADMIN_PASSWORD
+  //   wrangler secret put SUPABASE_SERVICE_ROLE_KEY
+  // Non-secret vars can go in [vars] below or in the Cloudflare dashboard.
+  "vars": {
+    "SUPABASE_URL": "https://xjypzphmjcqjpyrmthxl.supabase.co",
+    "SUPABASE_PUBLISHABLE_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhqeXB6cGhtamNxanB5cm10aHhsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkzMDY2ODgsImV4cCI6MjA5NDg4MjY4OH0.3puzoormY4Vh8PX8wuLU_IYGqRVcNjM9DSmd_H6AgGI",
+    "ADMIN_USERNAME": "tcl@admin",
+    "EMAIL_FROM": "TCL Babcock <no-reply@yourdomain.com>"
+  }
+}
