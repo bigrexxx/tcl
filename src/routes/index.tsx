@@ -1,8 +1,36 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import React, { useEffect, useMemo, useState } from "react";
 import { TclNav, TclFooter } from "@/components/TclNav";
 import { ToastProvider, useReveal } from "@/lib/tcl-toast";
 import { ScrollProgress, BackToTop, CountUp } from "@/components/LandingEnhancements";
 import { useSettings, formatNaira } from "@/lib/tcl-config";
+import { COMMITTEES } from "@/lib/tcl-committees";
+import { DEFAULT_LEADERSHIP_TEAM } from "@/lib/tcl-defaults";
+import { useServerFn } from "@tanstack/react-start";
+import { getSiteContent } from "@/lib/tcl-content.functions";
+import placeholderImg from "@/assets/tcl-og.jpg";
+
+const FALLBACK_IMAGE = placeholderImg;
+
+function FallbackImage({ src, fallback = FALLBACK_IMAGE, alt, ...props }: React.ImgHTMLAttributes<HTMLImageElement> & { fallback?: string }) {
+  const [currentSrc, setCurrentSrc] = useState(src || fallback);
+  useEffect(() => {
+    setCurrentSrc(src || fallback);
+  }, [src, fallback]);
+
+  return (
+    <img
+      {...props}
+      src={currentSrc}
+      alt={alt}
+      onError={() => {
+        if (currentSrc !== fallback) {
+          setCurrentSrc(fallback);
+        }
+      }}
+    />
+  );
+}
 
 export const Route = createFileRoute("/")({
   head: () => ({ meta: [
@@ -14,30 +42,35 @@ export const Route = createFileRoute("/")({
   component: () => <ToastProvider><Index/></ToastProvider>,
 });
 
-const committees = [
-  ["⚽", "Sports Committee", "Organises sports events, inter-department competitions and fitness activations that build camaraderie and a healthy campus culture among TCL members."],
-  ["📚", "Academic Committee", "Drives study groups, academic support and learning partnerships that help Babcock students excel both in and outside the classroom."],
-  ["📣", "Marketing Committee", "Manages TCL's brand campaigns, outreach and promotional strategies — growing our audience across digital channels and across Babcock campus."],
-  ["💰", "Finance Committee", "Manages TCL's budget, sponsorship revenue and financial planning — ensuring every initiative is well-resourced, sustainable and impactful."],
-  ["📱", "Social Media Committee", "Creates and manages content across Instagram, TikTok, Twitter/X and more — building TCL's online voice and growing our digital community."],
-  ["🎙️", "Content Council", "The creative engine of TCL — producing original video, podcast, written and multimedia content that authentically represents the Babcock campus experience."],
-  ["🎥", "Multi-Media Committee", "Handles photography, videography, graphic design and technical production across all TCL events, shoots and creative projects."],
-  ["💻", "Information Technologies", "Manages TCL's digital infrastructure — website, data systems and tech tools — ensuring everything runs smoothly behind the scenes."],
-  ["🤗", "Welfare Committee", "Champions the wellbeing of every TCL member — mental health awareness, member support systems and building a community that genuinely cares."],
-  ["👗", "Lifestyle & Fashion Committee", "Celebrates Babcock style, culture and creative expression through fashion showcases, lifestyle content and campus trend coverage."],
-];
 const team = [
-  ["✦", "Founder", "Founder & Visionary", "The Campus Lifestyle"],
-  ["CC", "Campus Coordinator", "Campus Coordinator", "Babcock University"],
-  ["OC", "Operations Coordinator", "Operations", "Babcock University"],
-  ["HR", "HR Director", "Human Resources Director", "People & Culture"],
-  ["PR", "PRO", "Public Relations Officer", "Communications"],
-  ["GS", "General Secretary", "General Secretary", "Administration"],
+  { image: "", name: "Founder", role: "Founder & Visionary", dept: "The Campus Lifestyle" },
+  { image: "", name: "Campus Coordinator", role: "Campus Coordinator", dept: "Babcock University" },
+  { image: "", name: "Operations Coordinator", role: "Operations", dept: "Babcock University" },
+  { image: "", name: "HR Director", role: "Human Resources Director", dept: "People & Culture" },
+  { image: "", name: "PRO", role: "Public Relations Officer", dept: "Communications" },
+  { image: "", name: "General Secretary", role: "General Secretary", dept: "Administration" },
 ];
 
 function Index() {
   useReveal();
   const settings = useSettings();
+  const getContent = useServerFn(getSiteContent);
+  const [committeesState, setCommitteesState] = useState(COMMITTEES as any[]);
+  const [teamState, setTeamState] = useState(DEFAULT_LEADERSHIP_TEAM as any[]);
+
+  useEffect(() => {
+    let mounted = true;
+    getContent()
+      .then((res: any) => {
+        if (!mounted || !res) return;
+        if (res.committees && res.committees.length) setCommitteesState(res.committees);
+        if (res.team && res.team.length) {
+          setTeamState(res.team.map((m: any) => ({ image: m.image_url ?? "", name: m.name, role: m.role, dept: m.dept })));
+        }
+      })
+      .catch(() => {});
+    return () => { mounted = false; };
+  }, [getContent]);
   return (
     <>
       <ScrollProgress />
@@ -50,9 +83,25 @@ function Index() {
         <h1>The Campus Lifestyle</h1>
         <p className="hero-tagline">Connect <span>|</span> Learn <span>|</span> Inspire</p>
         <p className="hero-desc">Babcock University's premier creative community for student innovators, content creators, and future-ready changemakers.</p>
+        <div className="hero-media reveal">
+          <FallbackImage
+            src={FALLBACK_IMAGE}
+            alt="Students collaborating on a creative project"
+          />
+        </div>
         <div className="hero-btns">
           <Link to="/register" className="btn-primary">Join the Community</Link>
           <Link to="/studio" className="btn-secondary">Book Studios 25</Link>
+        </div>
+        <div className="hero-cta-grid">
+          <div className="hero-cta-card">
+            <strong>Apply in 2 minutes</strong>
+            <p>Choose a committee, fill your details, and become part of TCL Babcock today.</p>
+          </div>
+          <div className="hero-cta-card">
+            <strong>Access student studios</strong>
+            <p>Book Studios 25 for content, shoots, and creative projects as a member or guest.</p>
+          </div>
         </div>
         <div className="hero-stats">
           <div className="stat-item"><div className="stat-num"><CountUp to="1000+" /></div><div className="stat-label">Members</div></div>
@@ -108,8 +157,20 @@ function Index() {
             <p className="sec-desc" style={{margin:"0 auto 2.5rem"}}>TCL Babcock runs through 10 specialist committees — each led by a passionate director and driven by members.</p>
           </div>
           <div className="comm-grid">
-            {committees.map(([i,n,d], idx) => (
-              <div key={n} className="comm-card reveal" style={{ transitionDelay: `${idx * 50}ms` }}><div className="comm-icon">{i}</div><h3>{n}</h3><p>{d}</p></div>
+            {committeesState.map((c, idx) => (
+              <Link key={c.id ?? idx} to="/committees/$id" params={{ id: c.id ?? c.name }} className="comm-card reveal" style={{ transitionDelay: `${idx * 50}ms` }} aria-label={`Open ${c.name} details`}>
+                <div className="comm-card-media">
+                  <FallbackImage
+                    src={c.image || FALLBACK_IMAGE}
+                    alt={`${c.name} image`}
+                  />
+                </div>
+                <div className="comm-card-copy">
+                  <div className="comm-icon">{c.icon}</div>
+                  <h3>{c.name}</h3>
+                  <p>{c.description ?? c.desc}</p>
+                </div>
+              </Link>
             ))}
           </div>
           <div className="structure-note reveal">
@@ -126,12 +187,14 @@ function Index() {
           </div>
           <p className="sub-label reveal">Leadership</p>
           <div className="leadership-grid reveal">
-            {team.map(([a,n,r,d], idx) => (
-              <div key={n} className="tcard" style={{ transitionDelay: `${idx * 60}ms` }}>
-                <div className="tcard-avatar">{a}</div>
-                <h3>{n}</h3>
-                <div className="role">{r}</div>
-                <div className="dept">{d}</div>
+            {teamState.map((member, idx) => (
+              <div key={`${member.name}-${idx}`} className="tcard" style={{ transitionDelay: `${idx * 60}ms` }}>
+                <div className="team-avatar">
+                  <FallbackImage src={member.image || FALLBACK_IMAGE} alt={`${member.role} portrait`} />
+                </div>
+                <h3>{member.name}</h3>
+                <div className="role">{member.role}</div>
+                <div className="dept">{member.dept}</div>
               </div>
             ))}
           </div>
@@ -152,6 +215,12 @@ function Index() {
         <div className="container">
           <div className="studio-layout">
             <div className="studio-visual reveal">
+              <div className="studio-image">
+                <FallbackImage
+                  src={placeholderImg}
+                  alt="Professional studio lighting and cameras"
+                />
+              </div>
               <div className="studio-visual-icon">📸</div>
               <h3>TCL Studios 25</h3>
               <p>Babcock's dedicated photo & video shoot studio — built for creators</p>

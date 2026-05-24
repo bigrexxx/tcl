@@ -3,7 +3,6 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { cloudflare } from "@cloudflare/vite-plugin";
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
-import tsconfigPaths from "vite-tsconfig-paths";
 
 export default defineConfig({
   plugins: [
@@ -12,13 +11,13 @@ export default defineConfig({
 
     react(),
     tailwindcss(),
-    tsconfigPaths(),
 
     // Cloudflare Workers build — build-only, skipped in dev
     ...(process.env.NODE_ENV === "production" ? [cloudflare()] : []),
   ],
 
   resolve: {
+    tsconfigPaths: true,
     dedupe: ["react", "react-dom", "@tanstack/react-router", "@tanstack/react-start"],
   },
 
@@ -26,14 +25,5 @@ export default defineConfig({
     port: 3000,
     host: true,
     strictPort: false,
-  },
-
-  // Server entry is resolved by tanstackStart; cloudflare() picks it up at build time.
-  build: {
-    rollupOptions: {
-      input: {
-        server: "src/server.ts",
-      },
-    },
   },
 });

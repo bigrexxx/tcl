@@ -334,9 +334,11 @@ function FormStep(props: {
 
         <form onSubmit={onSubmit} noValidate>
           <Section title="Your Profile">
-            {profileFields.map((q) => (
-              <Field key={q.id} q={q} value={getStr(q.id)} error={errors[q.id]} onChange={(v) => setVal(q.id, v)} />
-            ))}
+            <div className="frow">
+              {profileFields.map((q) => (
+                <Field key={q.id} q={q} value={getStr(q.id)} error={errors[q.id]} onChange={(v) => setVal(q.id, v)} />
+              ))}
+            </div>
           </Section>
 
           <Section title="About You at Babcock">
@@ -408,21 +410,31 @@ function Field({
         {q.label} {q.required && <span className="req">*</span>}
       </label>
       {q.type === "text" || q.type === "email" || q.type === "tel" || q.type === "url" ? (
-        <input
-          type={q.type === "url" ? "url" : q.type}
-          value={v}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={q.placeholder}
-          maxLength={255}
-        />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <input
+            type={q.type === "url" ? "url" : q.type}
+            value={v}
+            onChange={(e) => onChange(e.target.value)}
+            placeholder={q.placeholder}
+            maxLength={255}
+            aria-invalid={!!error}
+            aria-describedby={error ? `${q.id}-error` : undefined}
+          />
+          <div className="charcount">{v.length}/255</div>
+        </div>
       ) : q.type === "textarea" ? (
-        <textarea
-          rows={4}
-          value={v}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={q.placeholder}
-          maxLength={1000}
-        />
+        <div style={{ position: 'relative' }}>
+          <textarea
+            rows={4}
+            value={v}
+            onChange={(e) => onChange(e.target.value)}
+            placeholder={q.placeholder}
+            maxLength={1000}
+            aria-invalid={!!error}
+            aria-describedby={error ? `${q.id}-error` : undefined}
+          />
+          <div className="charcount" style={{ position: 'absolute', right: 8, bottom: 8 }}>{v.length}/1000</div>
+        </div>
       ) : q.type === "select" ? (
         <select value={v} onChange={(e) => onChange(e.target.value)}>
           <option value="">Select…</option>

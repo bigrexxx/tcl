@@ -11,6 +11,7 @@ const SECTIONS = [
 export function TclNav({ variant = "main" }: { variant?: "main" | "back" }) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState<string>("");
+  const [scrolled, setScrolled] = useState(false);
 
   useEffect(() => {
     if (variant !== "main") return;
@@ -50,7 +51,7 @@ export function TclNav({ variant = "main" }: { variant?: "main" | "back" }) {
 
   return (
     <>
-      <nav className="tnav">
+      <nav className={"tnav" + (scrolled ? " scrolled" : "")}>
         <Link to="/" className="nav-logo">
           <div className="nav-logo-box">TCL</div>
           <div className="nav-logo-text">Babcock<span>The Campus Lifestyle</span></div>
@@ -76,7 +77,7 @@ export function TclNav({ variant = "main" }: { variant?: "main" | "back" }) {
         ) : (
           <Link to="/" className="nav-back">← Back to main site</Link>
         )}
-        <button className="hamburger" onClick={() => setOpen(!open)} aria-label="Menu">
+        <button className="hamburger" onClick={() => setOpen(!open)} aria-label="Menu" aria-expanded={open} aria-controls="mobile-menu">
           <span></span><span></span><span></span>
         </button>
       </nav>

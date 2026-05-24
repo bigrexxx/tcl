@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "setup:storage": "node tools/create_supabase_bucket.js"
   },
   "dependencies": {
     "@cloudflare/vite-plugin": "^1.37.2",

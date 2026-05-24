@@ -32,9 +32,15 @@ cp .env.example .env
 
 Fill in `.env` with your real values — see `.env.example` for all required keys.
 
-### 3. Run the Supabase migrations
+### 3. Create the Supabase storage bucket
 
-In your [Supabase dashboard](https://supabase.com/dashboard) → SQL Editor, run all files in `supabase/migrations/` in order.
+If you plan to store uploaded images from the admin dashboard, create the public `site-assets` storage bucket first:
+
+```bash
+npm run setup:storage
+```
+
+Then run the Supabase migrations.
 
 ### 4. Start the dev server
 

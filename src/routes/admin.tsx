@@ -10,8 +10,17 @@ import {
   adminUpdateRegistrationStatus,
   adminUpdateSettings,
 } from "@/lib/tcl-admin.functions";
+import {
+  getSiteContent,
+  adminUpsertCommittee,
+  adminDeleteCommittee,
+  adminUpsertTeam,
+  adminDeleteTeam,
+} from "@/lib/tcl-content.functions";
+import { supabase } from "@/integrations/supabase/client";
 import { getPublicSettings, type PublicSettings } from "@/lib/tcl-backend.functions";
 import { DEFAULT_PUBLIC_SETTINGS } from "@/lib/tcl-config";
+import placeholderImg from "@/assets/tcl-og.jpg";
 
 export const Route = createFileRoute("/admin")({
   head: () => ({
@@ -204,14 +213,19 @@ function AdminPage({ password, onSignOut }: { password: string; onSignOut: () =>
               <div className="page-subtitle">{titles[panel].sub}</div>
             </div>
           </div>
+          <div className="topbar-right">
+            <button className="topbar-btn" onClick={() => setPanel("applications")}>Review apps</button>
+            <button className="topbar-btn" onClick={() => setPanel("bookings")}>Manage bookings</button>
+            <button className="topbar-btn primary" onClick={() => setPanel("settings")}>Workspace settings</button>
+          </div>
         </div>
 
         <div className="content">
-          {panel === "dashboard" && <DashboardPanel password={password} />}
+          {panel === "dashboard" && <DashboardPanel password={password} onSwitchPanel={setPanel} />}
           {panel === "members" && <MembersPanel password={password} />}
           {panel === "applications" && <ApplicationsPanel password={password} />}
           {panel === "bookings" && <BookingsPanel password={password} />}
-          {panel === "content" && <ContentPanel />}
+          {panel === "content" && <ContentPanel password={password} />}
           {panel === "settings" && <SettingsPanel password={password} />}
         </div>
       </div>
@@ -238,27 +252,50 @@ function initials(name: string) {
 
 // ─── Dashboard ───────────────────────────────────────────────────────────────
 
-function DashboardPanel({ password }: { password: string }) {
+function DashboardPanel({ password, onSwitchPanel }: { password: string; onSwitchPanel: (panel: PanelId) => void }) {
   const listRegs = useServerFn(adminListRegistrations);
   const listBookings = useServerFn(adminListBookings);
   const [regRows, setRegRows] = useState<any[]>([]);
   const [bookingRows, setBookingRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [apiHealthy, setApiHealthy] = useState<boolean | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    Promise.all([
-      listRegs({ data: { password } }).catch(() => ({ rows: [] })),
-      listBookings({ data: { password } }).catch(() => ({ rows: [] })),
-    ]).then(([r, b]) => {
+
+    Promise.allSettled([
+      listRegs({ data: { password } }),
+      listBookings({ data: { password } }),
+    ]).then((results) => {
       if (cancelled) return;
-      setRegRows(r.rows);
-      setBookingRows(b.rows);
+      const regResult = results[0];
+      const bookResult = results[1];
+      const regs = regResult.status === "fulfilled" ? regResult.value.rows : [];
+      const books = bookResult.status === "fulfilled" ? bookResult.value.rows : [];
+      setRegRows(regs);
+      setBookingRows(books);
+      setApiHealthy(regResult.status === "fulfilled" && bookResult.status === "fulfilled");
       setLoading(false);
     });
+
     return () => { cancelled = true; };
   }, [listRegs, listBookings, password]);
+
+  const pendingCount = regRows.filter((r: any) => r.status === "pending").length;
+  const approvedCount = regRows.filter((r: any) => r.status === "approved").length;
+  const declinedCount = regRows.filter((r: any) => r.status === "declined").length;
+  const confirmedBookings = bookingRows.filter((b: any) => b.status === "confirmed").length;
+  const pendingBookings = bookingRows.filter((b: any) => b.status === "pending").length;
+  const declinedBookings = bookingRows.filter((b: any) => b.status === "declined").length;
+
+  const packageCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const b of bookingRows) {
+      counts[b.package_name] = (counts[b.package_name] ?? 0) + 1;
+    }
+    return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 4);
+  }, [bookingRows]);
 
   // Recent activity — sort by raw ISO created_at, not locale string
   const recent = useMemo(() => {
@@ -292,18 +329,24 @@ function DashboardPanel({ password }: { password: string }) {
 
   return (
     <>
+      <div className="admin-actions-row">
+        <button className="action-btn primary" onClick={() => onSwitchPanel("applications")}>Review pending applications</button>
+        <button className="action-btn" onClick={() => onSwitchPanel("bookings")}>Confirm studio bookings</button>
+        <button className="action-btn" onClick={() => onSwitchPanel("members")}>View approved members</button>
+      </div>
+
       <div className="stats-grid">
         {[
           { label: "Total Applications", value: loading ? "…" : regRows.length.toLocaleString(), change: "All-time", icon: "📝" },
-          { label: "Pending Review", value: loading ? "…" : regRows.filter((r: any) => r.status === "pending").length.toLocaleString(), change: "Awaiting action", icon: "⏳" },
-          { label: "Studio Bookings", value: loading ? "…" : bookingRows.length.toLocaleString(), change: "All-time", icon: "📅" },
-          { label: "Status", value: "Live", change: "Backend connected", icon: "✅" },
+          { label: "Pending Review", value: loading ? "…" : pendingCount.toLocaleString(), change: "Needs action", icon: "⏳" },
+          { label: "Approved Apps", value: loading ? "…" : approvedCount.toLocaleString(), change: "Member growth", icon: "✅" },
+          { label: "Booking pipeline", value: loading ? "…" : `${confirmedBookings}/${bookingRows.length}`, change: apiHealthy === null ? "Checking" : apiHealthy ? "Backend healthy" : "API disconnected", icon: "📡" },
         ].map((s) => (
           <div key={s.label} className="stat-card">
             <div className="stat-icon">{s.icon}</div>
             <div className="stat-label">{s.label}</div>
             <div className="stat-value">{s.value}</div>
-            <div className="stat-change up">↑ {s.change}</div>
+            <div className="stat-change up">{s.change}</div>
           </div>
         ))}
       </div>
@@ -311,8 +354,8 @@ function DashboardPanel({ password }: { password: string }) {
       <div className="two-col-admin">
         <div className="mini-card">
           <div className="mini-card-title">Recent Activity</div>
-          {loading && <p style={{ color: "var(--muted)", fontSize: "0.9rem" }}>Loading…</p>}
-          {!loading && recent.length === 0 && <p style={{ color: "var(--muted)", fontSize: "0.9rem" }}>No activity yet.</p>}
+          {loading && <p className="panel-note">Loading…</p>}
+          {!loading && recent.length === 0 && <p className="panel-note">No activity yet.</p>}
           {recent.map((a, i) => (
             <div key={i} className="activity-item">
               <span className={"activity-dot " + (a.kind === "reg" ? "green" : "blue")} />
@@ -440,6 +483,8 @@ function ApplicationsPanel({ password }: { password: string }) {
   const updateFn = useServerFn(adminUpdateRegistrationStatus);
   const [apps, setApps] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [q, setQ] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"pending" | "approved" | "declined">("pending");
 
   const load = useCallback(() => {
     setLoading(true);
@@ -474,13 +519,41 @@ function ApplicationsPanel({ password }: { password: string }) {
     }
   };
 
-  const visible = apps.filter((a: any) => a.status === "pending");
+  const counts = useMemo(() => ({
+    pending: apps.filter((a: any) => a.status === "pending").length,
+    approved: apps.filter((a: any) => a.status === "approved").length,
+    declined: apps.filter((a: any) => a.status === "declined").length,
+  }), [apps]);
+
+  const visible = useMemo(() => apps
+    .filter((a: any) => a.status === statusFilter)
+    .filter((a: any) =>
+      !q ||
+      a.full_name.toLowerCase().includes(q.toLowerCase()) ||
+      a.email.toLowerCase().includes(q.toLowerCase()) ||
+      a.committee_name.toLowerCase().includes(q.toLowerCase())
+    ),
+  [apps, q, statusFilter]);
 
   return (
     <div className="table-card">
       <div className="table-header">
-        <div className="table-title">Pending Applications ({loading ? "…" : visible.length})</div>
+        <div>
+          <div className="table-title">{statusFilter.charAt(0).toUpperCase() + statusFilter.slice(1)} Applications ({loading ? "…" : counts[statusFilter]})</div>
+          <div className="status-pill-group">
+            {(["pending", "approved", "declined"] as const).map((status) => (
+              <button
+                key={status}
+                className={`action-btn${statusFilter === status ? " active" : ""}`}
+                onClick={() => setStatusFilter(status)}
+              >
+                {status.charAt(0).toUpperCase() + status.slice(1)} ({counts[status]})
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="table-actions">
+          <input className="search-input" placeholder="Search applicants…" value={q} onChange={(e) => setQ(e.target.value)} />
           <button className="action-btn" onClick={load}>Refresh</button>
         </div>
       </div>
@@ -515,7 +588,7 @@ function ApplicationsPanel({ password }: { password: string }) {
               </tr>
             ))}
             {!loading && visible.length === 0 && (
-              <tr><td colSpan={6} style={{ textAlign: "center", padding: "2rem", color: "var(--muted)" }}>No pending applications 🎉</td></tr>
+              <tr><td colSpan={6} style={{ textAlign: "center", padding: "2rem", color: "var(--muted)" }}>No applications match that filter.</td></tr>
             )}
           </tbody>
         </table>
@@ -532,6 +605,8 @@ function BookingsPanel({ password }: { password: string }) {
   const updateFn = useServerFn(adminUpdateBookingStatus);
   const [bookings, setBookings] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [q, setQ] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "pending" | "confirmed" | "declined">("all");
 
   const load = useCallback(() => {
     setLoading(true);
@@ -542,6 +617,23 @@ function BookingsPanel({ password }: { password: string }) {
   }, [listFn, password]);
 
   useEffect(() => { load(); }, [load]);
+
+  const counts = useMemo(() => ({
+    pending: bookings.filter((b: any) => b.status === "pending").length,
+    confirmed: bookings.filter((b: any) => b.status === "confirmed").length,
+    declined: bookings.filter((b: any) => b.status === "declined").length,
+  }), [bookings]);
+
+  const visibleBookings = useMemo(() => bookings
+    .filter((b: any) => statusFilter === "all" ? true : b.status === statusFilter)
+    .filter((b: any) =>
+      !q ||
+      b.full_name.toLowerCase().includes(q.toLowerCase()) ||
+      b.package_name.toLowerCase().includes(q.toLowerCase()) ||
+      b.phone.toLowerCase().includes(q.toLowerCase()) ||
+      b.email.toLowerCase().includes(q.toLowerCase())
+    ),
+  [bookings, q, statusFilter]);
 
   const update = async (id: string, status: "confirmed" | "declined") => {
     try {
@@ -559,14 +651,33 @@ function BookingsPanel({ password }: { password: string }) {
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "1rem" }}>
-        <button className="action-btn" onClick={load}>Refresh</button>
+      <div className="table-card">
+        <div className="table-header">
+          <div>
+            <div className="table-title">Studio Bookings</div>
+            <div className="status-pill-group">
+              {(["all", "pending", "confirmed", "declined"] as const).map((status) => (
+                <button
+                  key={status}
+                  className={`action-btn${statusFilter === status ? " active" : ""}`}
+                  onClick={() => setStatusFilter(status)}
+                >
+                  {status.charAt(0).toUpperCase() + status.slice(1)}{status !== "all" ? ` (${counts[status]})` : ""}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="table-actions">
+            <input className="search-input" placeholder="Search bookings…" value={q} onChange={(e) => setQ(e.target.value)} />
+            <button className="action-btn" onClick={load}>Refresh</button>
+          </div>
+        </div>
       </div>
       {loading && <p style={{ color: "var(--muted)" }}>Loading bookings…</p>}
-      {!loading && bookings.length === 0 && <p style={{ color: "var(--muted)" }}>No bookings yet.</p>}
-      {!loading && (
+      {!loading && visibleBookings.length === 0 && <p style={{ color: "var(--muted)" }}>No bookings match that filter.</p>}
+      {!loading && visibleBookings.length > 0 && (
         <div className="three-col">
-          {bookings.map((b: any) => (
+          {visibleBookings.map((b: any) => (
             <div key={b.id} className="booking-detail">
               <div className="booking-top">
                 <div>
@@ -603,19 +714,327 @@ function BookingsPanel({ password }: { password: string }) {
 
 // ─── Content ─────────────────────────────────────────────────────────────────
 
-function ContentPanel() {
+function ContentPanel({ password }: { password: string }) {
+  const show = useToast();
+  const fetchContent = useServerFn(getSiteContent);
+  const upsertCommittee = useServerFn(adminUpsertCommittee) as any;
+  const deleteCommittee = useServerFn(adminDeleteCommittee) as any;
+  const upsertTeam = useServerFn(adminUpsertTeam) as any;
+  const deleteTeam = useServerFn(adminDeleteTeam) as any;
+
+  const [committees, setCommittees] = useState<any[] | null>(null);
+  const [team, setTeam] = useState<any[] | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let mounted = true;
+    setLoading(true);
+    fetchContent()
+      .then((res: any) => {
+        if (!mounted) return;
+        setCommittees(res?.committees ?? null);
+        setTeam(res?.team ?? null);
+      })
+      .catch(() => {})
+      .finally(() => { if (mounted) setLoading(false); });
+    return () => { mounted = false; };
+  }, [fetchContent]);
+
+  // Committee form state
+  const [editCommittee, setEditCommittee] = useState<any | null>(null);
+  const [savingCommittee, setSavingCommittee] = useState(false);
+  const [uploadingCommitteeImage, setUploadingCommitteeImage] = useState(false);
+
+  // Team form state
+  const [editMember, setEditMember] = useState<any | null>(null);
+  const [savingMember, setSavingMember] = useState(false);
+  const [uploadingImage, setUploadingImage] = useState(false);
+
+  async function uploadStorageFile(file: File, folder: string, id: string) {
+    const ext = file.name.split('.').pop() || 'jpg';
+    const path = `${folder}/${id}.${ext}`;
+    const res = await supabase.storage.from('site-assets').upload(path, file, { upsert: true });
+    if (res.error) throw res.error;
+    const { data } = supabase.storage.from('site-assets').getPublicUrl(path);
+    const publicUrl = (data as any)?.publicUrl || (data as any)?.public_url || '';
+    if (!publicUrl) throw new Error('Could not generate image URL');
+    return publicUrl;
+  }
+
+  async function handleSaveCommittee(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editCommittee) return;
+    setSavingCommittee(true);
+    try {
+      await upsertCommittee({ data: { password, committee: editCommittee } });
+      // optimistic local update
+      setCommittees((p) => {
+        const arr = (p ?? []) as any[];
+        const idx = arr.findIndex((x) => x.id === editCommittee.id);
+        if (idx >= 0) { arr[idx] = editCommittee; return [...arr]; }
+        return [editCommittee, ...arr];
+      });
+      setEditCommittee(null);
+      show("Committee saved", "✅");
+    } catch (err: any) {
+      show(err?.message || "Save failed", "⚠️");
+    } finally { setSavingCommittee(false); }
+  }
+
+  async function handleDeleteCommittee(id: string) {
+    if (!window.confirm("Delete this committee? This cannot be undone.")) return;
+    try {
+      await deleteCommittee({ data: { password, id } });
+      setCommittees((p) => (p ?? []).filter((c: any) => c.id !== id));
+      show("Committee deleted", "🗑️");
+    } catch {
+      show("Delete failed", "⚠️");
+    }
+  }
+
+  async function handleSaveMember(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editMember) return;
+    setSavingMember(true);
+    try {
+      await upsertTeam({ data: { password, member: editMember } });
+      setTeam((p) => {
+        const arr = (p ?? []) as any[];
+        const idx = arr.findIndex((x) => x.id === editMember.id);
+        if (idx >= 0) { arr[idx] = { ...arr[idx], ...editMember }; return [...arr]; }
+        return [{ ...editMember }, ...arr];
+      });
+      setEditMember(null);
+      show("Team member saved", "✅");
+    } catch (err: any) {
+      show(err?.message || "Save failed", "⚠️");
+    } finally { setSavingMember(false); }
+  }
+
+  async function handleDeleteMember(id: string) {
+    if (!window.confirm("Delete this team member?")) return;
+    try {
+      await deleteTeam({ data: { password, id } });
+      setTeam((p) => (p ?? []).filter((m: any) => m.id !== id));
+      show("Member deleted", "🗑️");
+    } catch {
+      show("Delete failed", "⚠️");
+    }
+  }
+
+  const refreshContent = async () => {
+    const res = await fetchContent();
+    setCommittees(res.committees ?? null);
+    setTeam(res.team ?? null);
+  };
+
   return (
-    <div className="table-card">
-      <div className="table-header">
-        <div className="table-title">Content Library</div>
-        <div className="table-actions">
-          <span style={{ color: "var(--muted)", fontSize: "0.85rem" }}>Coming soon</span>
+    <div className="content-panel">
+      <div className="content-panel-header">
+        <div>
+          <div className="table-title">Site Content</div>
+          <div className="panel-note">Organize committees, leadership team, and asset previews in one place.</div>
+        </div>
+        <button className="action-btn" onClick={refreshContent}>Refresh</button>
+      </div>
+
+      <div className="content-summary">
+        <div className="content-card">
+          <div className="content-card-title">Committees</div>
+          <div className="content-card-desc">{loading ? "Loading…" : `Manage ${committees?.length ?? 0} committee groups.`}</div>
+        </div>
+        <div className="content-card">
+          <div className="content-card-title">Leadership Team</div>
+          <div className="content-card-desc">{loading ? "Loading…" : `Manage ${team?.length ?? 0} team profiles.`}</div>
+        </div>
+        <div className="content-card">
+          <div className="content-card-title">Asset workflow</div>
+          <div className="content-card-desc">Upload images and keep member and committee visuals updated from Supabase storage.</div>
         </div>
       </div>
-      <div style={{ padding: "3rem", textAlign: "center", color: "var(--muted)" }}>
-        <p style={{ fontSize: "2rem", marginBottom: "0.5rem" }}>🎨</p>
-        <p style={{ fontSize: "1rem", fontWeight: 600, color: "var(--white)" }}>Content management coming soon</p>
-        <p style={{ fontSize: "0.9rem" }}>Publish articles, reels and newsletters directly from here.</p>
+
+      <div className="content-grid-two">
+        <div className="content-card">
+          <div className="content-panel-header" style={{ padding: 0, marginBottom: 12 }}>
+            <div>
+              <div className="content-card-title">Committees</div>
+              <div className="content-card-desc">Create or edit the groups shown on the landing page.</div>
+            </div>
+            <button className="action-btn" onClick={() => setEditCommittee({ id: crypto.randomUUID(), name: "", desc: "", tagline: "", icon: "", image: "" })}>+ New</button>
+          </div>
+
+          {loading && <p style={{ color: "var(--muted)" }}>Loading committees…</p>}
+          {!loading && (!committees || committees.length === 0) && <p style={{ color: "var(--muted)" }}>No committees found.</p>}
+
+          {!loading && committees && (
+            <div className="content-list">
+              {committees.map((c: any) => (
+                <div key={c.id} className="content-item">
+                  <div className="content-item-title">
+                    <div className="content-item-avatar">
+                      <img src={c.image || placeholderImg} alt={c.name} />
+                    </div>
+                    <div>
+                      <h4>{c.name}</h4>
+                      <div className="content-item-meta">{c.tagline ?? c.desc}</div>
+                    </div>
+                  </div>
+                  <div className="row-actions">
+                    <button className="row-btn" onClick={() => setEditCommittee(c)}>Edit</button>
+                    <button className="row-btn del" onClick={() => handleDeleteCommittee(c.id)}>Delete</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {editCommittee && (
+            <form onSubmit={handleSaveCommittee} className="content-form">
+              <input className="settings-input" placeholder="Name" value={editCommittee.name} onChange={(e) => setEditCommittee((p:any)=>({...p, name: e.target.value}))} />
+              <input className="settings-input" placeholder="Tagline" value={editCommittee.tagline} onChange={(e) => setEditCommittee((p:any)=>({...p, tagline: e.target.value}))} />
+              <input className="settings-input" placeholder="Icon (emoji or short text)" value={editCommittee.icon} onChange={(e) => setEditCommittee((p:any)=>({...p, icon: e.target.value}))} />
+              <input className="settings-input" placeholder="Image URL" value={editCommittee.image} onChange={(e) => setEditCommittee((p:any)=>({...p, image: e.target.value}))} />
+
+              <div className="upload-row">
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (!f) return;
+                    setEditCommittee((p: any) => ({ ...p, __localPreview: URL.createObjectURL(f), __pendingFile: f }));
+                  }}
+                />
+                <button
+                  type="button"
+                  className="action-btn"
+                  onClick={async () => {
+                    const file: File | undefined = (editCommittee as any)?.__pendingFile;
+                    if (!file) return alert('Select a file first');
+                    if (!confirm('Upload selected image to Supabase storage?')) return;
+                    setUploadingCommitteeImage(true);
+                    try {
+                      const publicUrl = await uploadStorageFile(file, 'committees', editCommittee.id);
+                      setEditCommittee((p: any) => ({ ...p, image: publicUrl }));
+                      alert('Upload succeeded');
+                    } catch (err: any) {
+                      console.error(err);
+                      alert('Upload failed: ' + (err?.message || String(err)));
+                    } finally {
+                      setUploadingCommitteeImage(false);
+                      setEditCommittee((p: any) => { if (!p) return p; const copy = { ...p }; delete copy.__pendingFile; return copy; });
+                    }
+                  }}
+                  disabled={uploadingCommitteeImage}
+                >
+                  {uploadingCommitteeImage ? 'Uploading…' : 'Upload image'}
+                </button>
+              </div>
+
+              {(editCommittee.__localPreview || editCommittee.image) && (
+                <div className="content-image-preview" style={{ width: 120, height: 120, borderRadius: 14, overflow: 'hidden', background: '#222' }}>
+                  <img src={editCommittee.__localPreview || editCommittee.image} alt="preview" />
+                </div>
+              )}
+
+              <div className="content-form-actions">
+                <button className="action-btn primary" type="submit" disabled={savingCommittee}>{savingCommittee ? "Saving…" : "Save"}</button>
+                <button className="action-btn" type="button" onClick={() => setEditCommittee(null)}>Cancel</button>
+              </div>
+            </form>
+          )}
+        </div>
+
+        <div className="content-card">
+          <div className="content-panel-header" style={{ padding: 0, marginBottom: 12 }}>
+            <div>
+              <div className="content-card-title">Leadership Team</div>
+              <div className="content-card-desc">Add profiles for the team members shown on the site.</div>
+            </div>
+            <button className="action-btn" onClick={() => setEditMember({ id: crypto.randomUUID(), name: "", role: "", dept: "", image_url: "" })}>+ New</button>
+          </div>
+
+          {!loading && (!team || team.length === 0) && <p style={{ color: "var(--muted)" }}>No team members found.</p>}
+          {!loading && team && (
+            <div className="content-list">
+              {team.map((m: any) => (
+                <div key={m.id} className="content-item">
+                  <div className="content-item-title">
+                    <div className="content-item-avatar">
+                      <img src={m.image_url || m.image || placeholderImg} alt={m.name} />
+                    </div>
+                    <div>
+                      <h4>{m.name}</h4>
+                      <div className="content-item-meta">{m.role} — {m.dept}</div>
+                    </div>
+                  </div>
+                  <div className="row-actions">
+                    <button className="row-btn" onClick={() => setEditMember(m)}>Edit</button>
+                    <button className="row-btn del" onClick={() => handleDeleteMember(m.id)}>Delete</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {editMember && (
+            <form onSubmit={handleSaveMember} className="content-form">
+              <input className="settings-input" placeholder="Full name" value={editMember.name} onChange={(e)=>setEditMember((p:any)=>({...p, name: e.target.value}))} />
+              <input className="settings-input" placeholder="Role" value={editMember.role} onChange={(e)=>setEditMember((p:any)=>({...p, role: e.target.value}))} />
+              <input className="settings-input" placeholder="Department" value={editMember.dept} onChange={(e)=>setEditMember((p:any)=>({...p, dept: e.target.value}))} />
+              <input className="settings-input" placeholder="Image URL" value={editMember.image_url} onChange={(e)=>setEditMember((p:any)=>({...p, image_url: e.target.value}))} />
+
+              <div className="upload-row">
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (!f) return;
+                    setEditMember((p: any) => ({ ...p, __localPreview: URL.createObjectURL(f), __pendingFile: f }));
+                  }}
+                />
+                <button
+                  type="button"
+                  className="action-btn"
+                  onClick={async () => {
+                    const file: File | undefined = (editMember as any)?.__pendingFile;
+                    if (!file) {
+                      show('Select a file first.', '⚠️');
+                      return;
+                    }
+                    setUploadingImage(true);
+                    try {
+                      const publicUrl = await uploadStorageFile(file, 'team', editMember.id || crypto.randomUUID());
+                      setEditMember((p: any) => ({ ...p, image_url: publicUrl }));
+                      show('Upload succeeded', '✅');
+                    } catch (err: any) {
+                      console.error(err);
+                      show('Upload failed: ' + (err?.message || String(err)), '⚠️');
+                    } finally {
+                      setUploadingImage(false);
+                      setEditMember((p: any) => { if (!p) return p; const copy = { ...p }; delete copy.__pendingFile; return copy; });
+                    }
+                  }}
+                  disabled={uploadingImage}
+                >
+                  {uploadingImage ? 'Uploading…' : 'Upload image'}
+                </button>
+              </div>
+
+              {(editMember.__localPreview || editMember.image_url) && (
+                <div className="content-image-preview" style={{ width: 120, height: 120, borderRadius: 14, overflow: 'hidden', background: '#222' }}>
+                  <img src={editMember.__localPreview || editMember.image_url} alt="preview" />
+                </div>
+              )}
+
+              <div className="content-form-actions">
+                <button className="action-btn primary" type="submit" disabled={savingMember}>{savingMember ? "Saving…" : "Save"}</button>
+                <button className="action-btn" type="button" onClick={() => setEditMember(null)}>Cancel</button>
+              </div>
+            </form>
+          )}
+        </div>
       </div>
     </div>
   );
