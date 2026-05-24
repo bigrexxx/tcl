@@ -4,11 +4,13 @@ import { useServerFn } from "@tanstack/react-start";
 import { ToastProvider, useToast } from "@/lib/tcl-toast";
 import {
   adminVerifyPassword,
+  adminCheckSession,
   adminListRegistrations,
   adminListBookings,
   adminUpdateBookingStatus,
   adminUpdateRegistrationStatus,
   adminUpdateSettings,
+  adminListHistory,
 } from "@/lib/tcl-admin.functions";
 import {
   getSiteContent,
@@ -20,6 +22,7 @@ import {
 import { supabase } from "@/integrations/supabase/client";
 import { getPublicSettings, type PublicSettings } from "@/lib/tcl-backend.functions";
 import { DEFAULT_PUBLIC_SETTINGS } from "@/lib/tcl-config";
+import { ADMIN_SESSION_COOKIE_NAME } from "@/lib/tcl-admin-auth";
 import placeholderImg from "@/assets/tcl-og.jpg";
 
 export const Route = createFileRoute("/admin")({
@@ -37,36 +40,38 @@ export const Route = createFileRoute("/admin")({
   ),
 });
 
-const ADMIN_PWD_KEY = "tcl_admin_pwd_v1";
-
 // ─── Gate ────────────────────────────────────────────────────────────────────
 
 function AdminGate() {
   const verify = useServerFn(adminVerifyPassword);
-  const [password, setPassword] = useState<string | null>(null);
+  const checkSession = useServerFn(adminCheckSession);
   const [username, setUsername] = useState("");
   const [input, setInput] = useState("");
   const [error, setError] = useState("");
   const [checking, setChecking] = useState(true);
+  const [authenticated, setAuthenticated] = useState(false);
 
   useEffect(() => {
     if (typeof window === "undefined") { setChecking(false); return; }
-    const saved = window.sessionStorage.getItem(ADMIN_PWD_KEY);
-    if (!saved) { setChecking(false); return; }
-    const { u, p } = JSON.parse(saved);
-    verify({ data: { username: u, password: p } })
-      .then((res) => { if (res.ok) { setUsername(u); setPassword(p); } else window.sessionStorage.removeItem(ADMIN_PWD_KEY); })
+    checkSession()
+      .then((res) => {
+        if (res.ok) {
+          setAuthenticated(true);
+          if (res.username) setUsername(res.username);
+        }
+      })
       .catch(() => {})
       .finally(() => setChecking(false));
-  }, [verify]);
+  }, [checkSession]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
     const res = await verify({ data: { username, password: input } });
     if (res.ok) {
-      window.sessionStorage.setItem(ADMIN_PWD_KEY, JSON.stringify({ u: username, p: input }));
-      setPassword(input);
+      const secure = typeof window !== "undefined" && window.location.protocol === "https:" ? "; Secure" : "";
+      document.cookie = `${ADMIN_SESSION_COOKIE_NAME}=${encodeURIComponent(res.token)}; path=/; max-age=3600; sameSite=Strict${secure}`;
+      setAuthenticated(true);
     } else {
       setError("Incorrect username or password.");
     }
@@ -76,7 +81,7 @@ function AdminGate() {
     return <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", color: "var(--muted)" }}>Loading…</div>;
   }
 
-  if (!password) {
+  if (!authenticated) {
     return (
       <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: "2rem", background: "var(--bg, #0b0b10)" }}>
         <form onSubmit={handleSubmit} style={{ width: "100%", maxWidth: 380, background: "rgba(255,255,255,0.04)", padding: "2rem", borderRadius: 16, border: "1px solid rgba(255,255,255,0.08)" }}>
@@ -110,14 +115,19 @@ function AdminGate() {
     );
   }
 
-  return <AdminPage password={password} onSignOut={() => { window.sessionStorage.removeItem(ADMIN_PWD_KEY); setPassword(null); setUsername(""); }} />;
+  return <AdminPage username={username} onSignOut={() => {
+    const secure = typeof window !== "undefined" && window.location.protocol === "https:" ? "; Secure" : "";
+    document.cookie = `${ADMIN_SESSION_COOKIE_NAME}=; path=/; max-age=0; sameSite=Strict${secure}`;
+    setUsername("");
+    setAuthenticated(false);
+  }} />;
 }
 
 // ─── Shell ───────────────────────────────────────────────────────────────────
 
-type PanelId = "dashboard" | "members" | "applications" | "bookings" | "content" | "settings";
+type PanelId = "dashboard" | "members" | "applications" | "bookings" | "content" | "settings" | "history";
 
-function AdminPage({ password, onSignOut }: { password: string; onSignOut: () => void }) {
+function AdminPage({ username, onSignOut }: { username: string; onSignOut: () => void }) {
   const [panel, setPanel] = useState<PanelId>("dashboard");
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -130,15 +140,15 @@ function AdminPage({ password, onSignOut }: { password: string; onSignOut: () =>
   useEffect(() => {
     let cancelled = false;
     Promise.all([
-      listRegs({ data: { password } }).catch(() => ({ rows: [] })),
-      listBookings({ data: { password } }).catch(() => ({ rows: [] })),
+      listRegs().catch(() => ({ rows: [] })),
+      listBookings().catch(() => ({ rows: [] })),
     ]).then(([r, b]) => {
       if (cancelled) return;
       setPendingApps(r.rows.filter((x: any) => x.status === "pending").length);
       setPendingBookings(b.rows.filter((x: any) => x.status === "pending").length);
     });
     return () => { cancelled = true; };
-  }, [listRegs, listBookings, password]);
+  }, [listRegs, listBookings]);
 
   const NAV: { section: string; items: { id: PanelId; icon: string; label: string; badge?: number | null }[] }[] = [
     { section: "Overview", items: [{ id: "dashboard", icon: "📊", label: "Dashboard" }] },
@@ -152,6 +162,7 @@ function AdminPage({ password, onSignOut }: { password: string; onSignOut: () =>
     { section: "Workspace", items: [
       { id: "content", icon: "🎨", label: "Content" },
       { id: "settings", icon: "⚙️", label: "Settings" },
+      { id: "history", icon: "📜", label: "History" },
     ]},
   ];
 
@@ -176,7 +187,7 @@ function AdminPage({ password, onSignOut }: { password: string; onSignOut: () =>
         <div className="sidebar-admin">
           <div className="admin-avatar">AD</div>
           <div>
-            <div className="admin-name">Admin</div>
+            <div className="admin-name">{username || "Admin"}</div>
             <div className="admin-role">TCL Babcock</div>
           </div>
         </div>
@@ -221,12 +232,13 @@ function AdminPage({ password, onSignOut }: { password: string; onSignOut: () =>
         </div>
 
         <div className="content">
-          {panel === "dashboard" && <DashboardPanel password={password} onSwitchPanel={setPanel} />}
-          {panel === "members" && <MembersPanel password={password} />}
-          {panel === "applications" && <ApplicationsPanel password={password} />}
-          {panel === "bookings" && <BookingsPanel password={password} />}
-          {panel === "content" && <ContentPanel password={password} />}
-          {panel === "settings" && <SettingsPanel password={password} />}
+          {panel === "dashboard" && <DashboardPanel onSwitchPanel={setPanel} />}
+          {panel === "members" && <MembersPanel />}
+          {panel === "applications" && <ApplicationsPanel />}
+          {panel === "bookings" && <BookingsPanel />}
+          {panel === "content" && <ContentPanel />}
+          {panel === "settings" && <SettingsPanel />}
+          {panel === "history" && <HistoryPanel />}
         </div>
       </div>
     </div>
@@ -252,7 +264,7 @@ function initials(name: string) {
 
 // ─── Dashboard ───────────────────────────────────────────────────────────────
 
-function DashboardPanel({ password, onSwitchPanel }: { password: string; onSwitchPanel: (panel: PanelId) => void }) {
+function DashboardPanel({ onSwitchPanel }: { onSwitchPanel: (panel: PanelId) => void }) {
   const listRegs = useServerFn(adminListRegistrations);
   const listBookings = useServerFn(adminListBookings);
   const [regRows, setRegRows] = useState<any[]>([]);
@@ -265,8 +277,8 @@ function DashboardPanel({ password, onSwitchPanel }: { password: string; onSwitc
     setLoading(true);
 
     Promise.allSettled([
-      listRegs({ data: { password } }),
-      listBookings({ data: { password } }),
+      listRegs(),
+      listBookings(),
     ]).then((results) => {
       if (cancelled) return;
       const regResult = results[0];
@@ -280,7 +292,7 @@ function DashboardPanel({ password, onSwitchPanel }: { password: string; onSwitc
     });
 
     return () => { cancelled = true; };
-  }, [listRegs, listBookings, password]);
+  }, [listRegs, listBookings]);
 
   const pendingCount = regRows.filter((r: any) => r.status === "pending").length;
   const approvedCount = regRows.filter((r: any) => r.status === "approved").length;
@@ -384,9 +396,61 @@ function DashboardPanel({ password, onSwitchPanel }: { password: string; onSwitc
   );
 }
 
+function HistoryPanel() {
+  const listHistory = useServerFn(adminListHistory);
+  const [rows, setRows] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    listHistory()
+      .then((res) => setRows(res.rows))
+      .catch(() => setRows([]))
+      .finally(() => setLoading(false));
+  }, [listHistory]);
+
+  useEffect(() => { load(); }, [load]);
+
+  return (
+    <div className="table-card">
+      <div className="table-header">
+        <div>
+          <div className="table-title">Admin History</div>
+          <div className="table-subtitle">Recent recorded admin actions and changes</div>
+        </div>
+        <div className="table-actions">
+          <button className="action-btn" onClick={load}>Refresh</button>
+        </div>
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table>
+          <thead>
+            <tr><th>When</th><th>Actor</th><th>Action</th><th>Entity</th><th>Details</th></tr>
+          </thead>
+          <tbody>
+            {loading && <tr><td colSpan={5} style={{ textAlign: "center", padding: "2rem", color: "var(--muted)" }}>Loading…</td></tr>}
+            {!loading && rows.map((row: any) => (
+              <tr key={row.id}>
+                <td>{new Date(row.created_at).toLocaleString()}</td>
+                <td>{row.actor}</td>
+                <td>{row.action}</td>
+                <td>{row.entity}{row.entity_id ? ` (${row.entity_id})` : ""}</td>
+                <td style={{ maxWidth: 300, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{row.details ? JSON.stringify(row.details) : "—"}</td>
+              </tr>
+            ))}
+            {!loading && rows.length === 0 && (
+              <tr><td colSpan={5} style={{ textAlign: "center", padding: "2rem", color: "var(--muted)" }}>No history records yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 // ─── Members ─────────────────────────────────────────────────────────────────
 
-function MembersPanel({ password }: { password: string }) {
+function MembersPanel() {
   const show = useToast();
   const listFn = useServerFn(adminListRegistrations);
   const updateFn = useServerFn(adminUpdateRegistrationStatus);
@@ -396,11 +460,11 @@ function MembersPanel({ password }: { password: string }) {
 
   const load = useCallback(() => {
     setLoading(true);
-    listFn({ data: { password } })
+    listFn()
       .then((res) => setRows(res.rows))
       .catch(() => setRows([]))
       .finally(() => setLoading(false));
-  }, [listFn, password]);
+  }, [listFn]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -419,7 +483,7 @@ function MembersPanel({ password }: { password: string }) {
   async function remove(id: string, name: string) {
     if (!window.confirm(`Remove ${name} from TCL? This sets their status to declined.`)) return;
     try {
-      await updateFn({ data: { password, id, status: "declined" } });
+      await updateFn({ data: { id, status: "declined" } });
       setRows((p) => p.map((r) => r.id === id ? { ...r, status: "declined" } : r));
       show("Member removed", "🗑️");
     } catch {
@@ -477,7 +541,7 @@ function MembersPanel({ password }: { password: string }) {
 
 // ─── Applications ─────────────────────────────────────────────────────────────
 
-function ApplicationsPanel({ password }: { password: string }) {
+function ApplicationsPanel() {
   const show = useToast();
   const listFn = useServerFn(adminListRegistrations);
   const updateFn = useServerFn(adminUpdateRegistrationStatus);
@@ -488,18 +552,19 @@ function ApplicationsPanel({ password }: { password: string }) {
 
   const load = useCallback(() => {
     setLoading(true);
-    listFn({ data: { password } })
+    listFn()
       .then((res) => setApps(res.rows))
       .catch(() => setApps([]))
       .finally(() => setLoading(false));
-  }, [listFn, password]);
+  }, [listFn]);
 
   useEffect(() => { load(); }, [load]);
 
   const act = async (id: string, kind: "approve" | "decline") => {
     try {
+      if (kind === "decline" && !window.confirm(`Decline this application?`)) return;
       const res = await updateFn({
-        data: { password, id, status: kind === "approve" ? "approved" : "declined" },
+        data: { id, status: kind === "approve" ? "approved" : "declined" },
       }) as any;
       // Move off the pending list
       setApps((p) => p.map((a) => a.id === id ? { ...a, status: kind === "approve" ? "approved" : "declined" } : a));
@@ -599,7 +664,7 @@ function ApplicationsPanel({ password }: { password: string }) {
 
 // ─── Bookings ─────────────────────────────────────────────────────────────────
 
-function BookingsPanel({ password }: { password: string }) {
+function BookingsPanel() {
   const show = useToast();
   const listFn = useServerFn(adminListBookings);
   const updateFn = useServerFn(adminUpdateBookingStatus);
@@ -610,11 +675,11 @@ function BookingsPanel({ password }: { password: string }) {
 
   const load = useCallback(() => {
     setLoading(true);
-    listFn({ data: { password } })
+    listFn()
       .then((res) => setBookings(res.rows))
       .catch(() => setBookings([]))
       .finally(() => setLoading(false));
-  }, [listFn, password]);
+  }, [listFn]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -637,7 +702,8 @@ function BookingsPanel({ password }: { password: string }) {
 
   const update = async (id: string, status: "confirmed" | "declined") => {
     try {
-      const res = await updateFn({ data: { password, id, status } }) as any;
+      if (status === "declined" && !window.confirm('Decline this booking?')) return;
+      const res = await updateFn({ data: { id, status } }) as any;
       setBookings((p) => p.map((b) => b.id === id ? { ...b, status } : b));
       if (status === "confirmed") {
         show(res.emailSent ? "Booking confirmed — email sent ✉️" : `Confirmed (email not sent: ${res.emailError ?? "unknown"})`, res.emailSent ? "✅" : "⚠️");
@@ -714,7 +780,7 @@ function BookingsPanel({ password }: { password: string }) {
 
 // ─── Content ─────────────────────────────────────────────────────────────────
 
-function ContentPanel({ password }: { password: string }) {
+function ContentPanel() {
   const show = useToast();
   const fetchContent = useServerFn(getSiteContent);
   const upsertCommittee = useServerFn(adminUpsertCommittee) as any;
@@ -766,7 +832,7 @@ function ContentPanel({ password }: { password: string }) {
     if (!editCommittee) return;
     setSavingCommittee(true);
     try {
-      await upsertCommittee({ data: { password, committee: editCommittee } });
+      await upsertCommittee({ data: { committee: editCommittee } });
       // optimistic local update
       setCommittees((p) => {
         const arr = (p ?? []) as any[];
@@ -784,7 +850,7 @@ function ContentPanel({ password }: { password: string }) {
   async function handleDeleteCommittee(id: string) {
     if (!window.confirm("Delete this committee? This cannot be undone.")) return;
     try {
-      await deleteCommittee({ data: { password, id } });
+      await deleteCommittee({ data: { id } });
       setCommittees((p) => (p ?? []).filter((c: any) => c.id !== id));
       show("Committee deleted", "🗑️");
     } catch {
@@ -797,7 +863,7 @@ function ContentPanel({ password }: { password: string }) {
     if (!editMember) return;
     setSavingMember(true);
     try {
-      await upsertTeam({ data: { password, member: editMember } });
+      await upsertTeam({ data: { member: editMember } });
       setTeam((p) => {
         const arr = (p ?? []) as any[];
         const idx = arr.findIndex((x) => x.id === editMember.id);
@@ -814,7 +880,7 @@ function ContentPanel({ password }: { password: string }) {
   async function handleDeleteMember(id: string) {
     if (!window.confirm("Delete this team member?")) return;
     try {
-      await deleteTeam({ data: { password, id } });
+      await deleteTeam({ data: { id } });
       setTeam((p) => (p ?? []).filter((m: any) => m.id !== id));
       show("Member deleted", "🗑️");
     } catch {
@@ -1042,7 +1108,7 @@ function ContentPanel({ password }: { password: string }) {
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
 
-function SettingsPanel({ password }: { password: string }) {
+function SettingsPanel() {
   const show = useToast();
   const fetchFn = useServerFn(getPublicSettings);
   const saveFn = useServerFn(adminUpdateSettings);
@@ -1068,7 +1134,7 @@ function SettingsPanel({ password }: { password: string }) {
     setUrlError("");
     setSaving(true);
     try {
-      await saveFn({ data: { password, ...s } });
+      await saveFn({ data: { ...s } });
       show("Settings saved", "✅");
     } catch (err: any) {
       show(err?.message || "Save failed", "⚠️");

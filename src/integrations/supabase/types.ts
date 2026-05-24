@@ -140,6 +140,36 @@ export type Database = {
         }
         Relationships: []
       }
+      admin_history: {
+        Row: {
+          actor: string
+          action: string
+          details: Json | null
+          entity: string
+          entity_id: string | null
+          id: string
+          created_at: string
+        }
+        Insert: {
+          actor: string
+          action: string
+          details?: Json | null
+          entity: string
+          entity_id?: string | null
+          id?: string
+          created_at?: string
+        }
+        Update: {
+          actor?: string
+          action?: string
+          details?: Json | null
+          entity?: string
+          entity_id?: string | null
+          id?: string
+          created_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       studio_booked_slots: {

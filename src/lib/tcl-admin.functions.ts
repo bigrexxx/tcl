@@ -2,6 +2,18 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import {
+  createAdminSessionToken,
+  getAdminSessionCookie,
+  recordAdminHistory,
+  requireAdmin,
+  requireAdminAuth,
+  requireAdminPassword,
+  verifyAdminSessionToken,
+  AdminAuth,
+  AdminAuthBase,
+  AdminLogin,
+} from "@/lib/tcl-admin-auth.server";
+import {
   sendEmail,
   buildApprovalEmail,
   buildDeclinedEmail,
@@ -9,50 +21,38 @@ import {
   buildBookingDeclinedEmail,
 } from "@/lib/tcl-email";
 
-// ─── Auth ─────────────────────────────────────────────────────────────────────
-
-/**
- * Constant-time string comparison — padded to 256 chars to prevent timing attacks.
- */
-function ctEqual(a: string, b: string): boolean {
-  const PAD = 256;
-  const pa = a.padEnd(PAD, "\0").slice(0, PAD);
-  const pb = b.padEnd(PAD, "\0").slice(0, PAD);
-  let diff = 0;
-  for (let i = 0; i < PAD; i++) diff |= pa.charCodeAt(i) ^ pb.charCodeAt(i);
-  return diff === 0 && a.length === b.length;
-}
-
-function requireAdmin(username: string, password: string) {
-  const expectedUser = process.env.ADMIN_USERNAME ?? "tcl@admin";
-  const expectedPwd  = process.env.ADMIN_PASSWORD ?? "";
-  if (!expectedPwd) throw new Error("Admin password not configured.");
-  if (!ctEqual(username, expectedUser) || !ctEqual(password, expectedPwd)) {
-    throw new Error("Unauthorized");
-  }
-}
-
-/** Used by subsequent server fns that already hold a verified session token (password only). */
-function requireAdminPwd(password: string) {
-  const expected = process.env.ADMIN_PASSWORD ?? "";
-  if (!expected) throw new Error("Admin password not configured.");
-  if (!ctEqual(password, expected)) throw new Error("Unauthorized");
-}
-
-const AdminPwd = z.object({
-  username: z.string().min(1).max(200),
-  password: z.string().min(1).max(200),
-});
-
 export const adminVerifyPassword = createServerFn({ method: "POST" })
-  .inputValidator((input: unknown) => AdminPwd.parse(input))
+  .inputValidator((input: unknown) => AdminLogin.parse(input))
   .handler(async ({ data }) => {
     try {
       requireAdmin(data.username, data.password);
-      return { ok: true as const };
+      const token = await createAdminSessionToken(data.username);
+      return { ok: true as const, token };
     } catch {
       return { ok: false as const, error: "Invalid credentials" };
     }
+  });
+
+export const adminCheckSession = createServerFn({ method: "GET" })
+  .handler(async ({ request }: any) => {
+    const token = getAdminSessionCookie(request);
+    if (!token) return { ok: false as const };
+    const result = await verifyAdminSessionToken(token);
+    if (!result.ok) return { ok: false as const };
+    return { ok: true as const, username: result.username };
+  });
+
+export const adminListHistory = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => AdminAuth.parse(input))
+  .handler(async ({ data, request }: any) => {
+    await requireAdminAuth(request, data.password);
+    const { data: rows, error } = await supabaseAdmin
+      .from("admin_history")
+      .select("id, actor, action, entity, entity_id, details, created_at")
+      .order("created_at", { ascending: false })
+      .limit(200);
+    if (error) throw new Error(error.message);
+    return { rows: rows ?? [] };
   });
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -69,9 +69,9 @@ async function getSettings() {
 // ─── Registrations ────────────────────────────────────────────────────────────
 
 export const adminListRegistrations = createServerFn({ method: "POST" })
-  .inputValidator((input: unknown) => AdminPwd.parse(input))
-  .handler(async ({ data }) => {
-    requireAdminPwd(data.password);
+  .inputValidator((input: unknown) => AdminAuth.parse(input))
+  .handler(async ({ data, request }: any) => {
+    await requireAdminAuth(request, data.password);
     const { data: rows, error } = await supabaseAdmin
       .from("registrations")
       .select(
@@ -83,15 +83,15 @@ export const adminListRegistrations = createServerFn({ method: "POST" })
     return { rows: rows ?? [] };
   });
 
-const UpdateRegistrationStatus = AdminPwd.extend({
+const UpdateRegistrationStatus = AdminAuthBase.extend({
   id: z.string().uuid(),
   status: z.enum(["pending", "approved", "declined"]),
 });
 
 export const adminUpdateRegistrationStatus = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => UpdateRegistrationStatus.parse(input))
-  .handler(async ({ data }) => {
-    requireAdminPwd(data.password);
+  .handler(async ({ data, request }: any) => {
+    const actor = await requireAdminAuth(request, data.password);
 
     // 1. Persist status change
     const { error: updateError } = await supabaseAdmin
@@ -99,6 +99,63 @@ export const adminUpdateRegistrationStatus = createServerFn({ method: "POST" })
       .update({ status: data.status })
       .eq("id", data.id);
     if (updateError) throw new Error(updateError.message);
+
+    const history: any = { status: data.status, emailSent: false, emailError: null };
+
+    // 2. Fetch the registration row
+    const { data: reg, error: fetchError } = await supabaseAdmin
+      .from("registrations")
+      .select("full_name, email, committee_name, approval_email_sent")
+      .eq("id", data.id)
+      .single();
+    if (fetchError || !reg) {
+      await recordAdminHistory(actor, `${data.status} registration`, "registration", data.id, history);
+      return { ok: true as const, emailSent: false, emailError: "Could not fetch registration" };
+    }
+
+    // 3. Send appropriate email
+    if (data.status === "approved") {
+      if (reg.approval_email_sent) {
+        history.emailError = "Approval email already sent";
+        await recordAdminHistory(actor, "approved registration", "registration", data.id, history);
+        return { ok: true as const, emailSent: false, emailError: null };
+      }
+
+      const { waGcLink } = await getSettings();
+      if (!waGcLink) {
+        history.emailError = "WhatsApp group link not configured";
+        await recordAdminHistory(actor, "approved registration", "registration", data.id, history);
+        return { ok: true as const, emailSent: false, emailError: "WhatsApp group link not configured in Settings" };
+      }
+
+      const tpl = buildApprovalEmail({ toName: reg.full_name, committeeName: reg.committee_name, waGcLink });
+      const result = await sendEmail({ to: reg.email, ...tpl });
+
+      if (result.ok) {
+        history.emailSent = true;
+        await supabaseAdmin
+          .from("registrations")
+          .update({ approval_email_sent: true, approval_email_sent_at: new Date().toISOString() })
+          .eq("id", data.id);
+      } else {
+        history.emailError = result.error ?? "Unknown";
+      }
+
+      await recordAdminHistory(actor, "approved registration", "registration", data.id, history);
+      return { ok: true as const, emailSent: result.ok, emailError: result.error ?? null };
+    }
+
+    if (data.status === "declined") {
+      const tpl = buildDeclinedEmail({ toName: reg.full_name, committeeName: reg.committee_name });
+      const result = await sendEmail({ to: reg.email, ...tpl });
+      history.emailSent = result.ok;
+      history.emailError = result.error ?? null;
+      await recordAdminHistory(actor, "declined registration", "registration", data.id, history);
+      return { ok: true as const, emailSent: result.ok, emailError: result.error ?? null };
+    }
+
+    await recordAdminHistory(actor, `${data.status} registration`, "registration", data.id, history);
+    return { ok: true as const, emailSent: false, emailError: null };
 
     // 2. Fetch the registration row
     const { data: reg, error: fetchError } = await supabaseAdmin
@@ -183,9 +240,9 @@ export const checkApplicationStatus = createServerFn({ method: "POST" })
 // ─── Bookings ─────────────────────────────────────────────────────────────────
 
 export const adminListBookings = createServerFn({ method: "POST" })
-  .inputValidator((input: unknown) => AdminPwd.parse(input))
-  .handler(async ({ data }) => {
-    requireAdminPwd(data.password);
+  .inputValidator((input: unknown) => AdminAuth.parse(input))
+  .handler(async ({ data, request }: any) => {
+    await requireAdminAuth(request, data.password);
     const { data: rows, error } = await supabaseAdmin
       .from("studio_bookings")
       .select(
@@ -197,15 +254,16 @@ export const adminListBookings = createServerFn({ method: "POST" })
     return { rows: rows ?? [] };
   });
 
-const UpdateBookingStatus = AdminPwd.extend({
+const UpdateBookingStatus = AdminAuthBase.extend({
   id: z.string().uuid(),
   status: z.enum(["pending", "confirmed", "declined"]),
 });
 
 export const adminUpdateBookingStatus = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => UpdateBookingStatus.parse(input))
-  .handler(async ({ data }) => {
-    requireAdminPwd(data.password);
+  .handler(async ({ data, request }: any) => {
+    const actor = await requireAdminAuth(request, data.password);
+    const history: any = { status: data.status, emailSent: false, emailError: null };
 
     // 1. Persist status
     const { error } = await supabaseAdmin
@@ -222,6 +280,7 @@ export const adminUpdateBookingStatus = createServerFn({ method: "POST" })
       .single();
 
     if (fetchError || !booking) {
+      await recordAdminHistory(actor, `${data.status} booking`, "booking", data.id, history);
       return { ok: true as const, emailSent: false, emailError: "Could not fetch booking" };
     }
 
@@ -245,16 +304,20 @@ export const adminUpdateBookingStatus = createServerFn({ method: "POST" })
         adminWhatsapp,
       });
     } else {
+      await recordAdminHistory(actor, `${data.status} booking`, "booking", data.id, history);
       return { ok: true as const, emailSent: false, emailError: null };
     }
 
     const result = await sendEmail({ to: booking.email, ...tpl });
+    history.emailSent = result.ok;
+    history.emailError = result.error ?? null;
+    await recordAdminHistory(actor, `${data.status} booking`, "booking", data.id, history);
     return { ok: true as const, emailSent: result.ok, emailError: result.error ?? null };
   });
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
 
-const UpdateSettings = AdminPwd.extend({
+const UpdateSettings = AdminAuthBase.extend({
   hourlyPriceNaira: z.number().int().min(0).max(10_000_000),
   halfDayPriceNaira: z.number().int().min(0).max(10_000_000),
   fullDayPriceNaira: z.number().int().min(0).max(10_000_000),
@@ -269,8 +332,8 @@ const UpdateSettings = AdminPwd.extend({
 
 export const adminUpdateSettings = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => UpdateSettings.parse(input))
-  .handler(async ({ data }) => {
-    requireAdminPwd(data.password);
+  .handler(async ({ data, request }: any) => {
+    const actor = await requireAdminAuth(request, data.password);
     const { error } = await supabaseAdmin
       .from("app_settings")
       .update({
@@ -285,5 +348,14 @@ export const adminUpdateSettings = createServerFn({ method: "POST" })
       })
       .eq("id", 1);
     if (error) throw new Error(error.message);
+    await recordAdminHistory(actor, "updated settings", "settings", undefined, {
+      hourlyPriceNaira: data.hourlyPriceNaira,
+      halfDayPriceNaira: data.halfDayPriceNaira,
+      fullDayPriceNaira: data.fullDayPriceNaira,
+      podcastPriceNaira: data.podcastPriceNaira,
+      adminWhatsapp: data.adminWhatsapp,
+      waGcLink: data.waGcLink,
+      gaMeasurementId: data.gaMeasurementId,
+    });
     return { ok: true as const };
   });

@@ -1,21 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
-
-// Lightweight constant-time compare to avoid timing attacks for admin password
-function ctEqual(a: string, b: string): boolean {
-  const PAD = 256;
-  const pa = a.padEnd(PAD, "\0").slice(0, PAD);
-  const pb = b.padEnd(PAD, "\0").slice(0, PAD);
-  let diff = 0;
-  for (let i = 0; i < PAD; i++) diff |= pa.charCodeAt(i) ^ pb.charCodeAt(i);
-  return diff === 0 && a.length === b.length;
-}
-
-function requireAdminPwd(password: string) {
-  const expected = process.env.ADMIN_PASSWORD ?? "";
-  if (!expected) throw new Error("Admin password not configured.");
-  if (!ctEqual(password, expected)) throw new Error("Unauthorized");
-}
+import { requireAdminAuth, recordAdminHistory, AdminAuth } from "@/lib/tcl-admin-auth.server";
 
 // Public endpoint: try to read site_committees and site_team tables if present.
 export const getSiteContent = createServerFn({ method: "GET" })
@@ -39,27 +24,30 @@ export const getSiteContent = createServerFn({ method: "GET" })
       if (tErr && tErr.code === "42P01") return { committees: committees ?? null, team: null };
       return { committees: committees ?? null, team: team ?? null };
     } catch (err) {
+      console.error("getSiteContent failed", err);
       return { committees: null, team: null };
     }
   });
 
 // Admin endpoints to upsert content. Requires admin password.
 export const adminUpsertCommittee = createServerFn({ method: "POST" })
-  .handler(async ({ data }) => {
+  .inputValidator((input: unknown) => AdminAuth.parse(input))
+  .handler(async ({ data, request }: any) => {
     const { password, committee } = data as any;
-    requireAdminPwd(password);
+    const actor = await requireAdminAuth(request, password);
     if (!committee || !committee.id) throw new Error("Missing committee payload");
-    // Try upsert — table may not exist on older deployments
     const sa: any = supabaseAdmin as any;
     const { error } = await sa.from("site_committees").upsert(committee, { onConflict: "id" });
     if (error) throw error;
+    await recordAdminHistory(actor, "upserted committee", "committee", committee.id, committee);
     return { ok: true };
   });
 
 export const adminDeleteCommittee = createServerFn({ method: "POST" })
-  .handler(async ({ data }) => {
+  .inputValidator((input: unknown) => AdminAuth.parse(input))
+  .handler(async ({ data, request }: any) => {
     const { password, id } = data as any;
-    requireAdminPwd(password);
+    const actor = await requireAdminAuth(request, password);
     if (!id) throw new Error("Missing id");
     const sa: any = supabaseAdmin as any;
 
@@ -80,24 +68,28 @@ export const adminDeleteCommittee = createServerFn({ method: "POST" })
 
     const { error } = await sa.from("site_committees").delete().eq("id", id);
     if (error) throw error;
+    await recordAdminHistory(actor, "deleted committee", "committee", id, { imageUrl });
     return { ok: true };
   });
 
 export const adminUpsertTeam = createServerFn({ method: "POST" })
-  .handler(async ({ data }) => {
+  .inputValidator((input: unknown) => AdminAuth.parse(input))
+  .handler(async ({ data, request }: any) => {
     const { password, member } = data as any;
-    requireAdminPwd(password);
+    const actor = await requireAdminAuth(request, password);
     if (!member || !member.id) throw new Error("Missing member payload");
     const sa: any = supabaseAdmin as any;
     const { error } = await sa.from("site_team").upsert(member, { onConflict: "id" });
     if (error) throw error;
+    await recordAdminHistory(actor, "upserted team member", "team_member", member.id, member);
     return { ok: true };
   });
 
 export const adminDeleteTeam = createServerFn({ method: "POST" })
-  .handler(async ({ data }) => {
+  .inputValidator((input: unknown) => AdminAuth.parse(input))
+  .handler(async ({ data, request }: any) => {
     const { password, id } = data as any;
-    requireAdminPwd(password);
+    const actor = await requireAdminAuth(request, password);
     if (!id) throw new Error("Missing id");
     const sa: any = supabaseAdmin as any;
 
@@ -119,5 +111,6 @@ export const adminDeleteTeam = createServerFn({ method: "POST" })
 
     const { error } = await sa.from("site_team").delete().eq("id", id);
     if (error) throw error;
+    await recordAdminHistory(actor, "deleted team member", "team_member", id, { imageUrl });
     return { ok: true };
   });
