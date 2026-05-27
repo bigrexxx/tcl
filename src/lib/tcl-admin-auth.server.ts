@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
+import type { Json } from "@/integrations/supabase/types";
 
 const ADMIN_SESSION_COOKIE = "tcl_admin_session";
 const ADMIN_SESSION_MAX_AGE_SECONDS = 60 * 60;
@@ -124,9 +125,10 @@ export async function recordAdminHistory(
   entityId?: string,
   details?: unknown,
 ) {
+  const payload = details === undefined ? null : (details as unknown as Json);
   const { error } = await supabaseAdmin
     .from("admin_history")
-    .insert([{ actor, action, entity, entity_id: entityId ?? null, details: details ?? null }]);
+    .insert([{ actor, action, entity, entity_id: entityId ?? null, details: payload }]);
   if (error) throw new Error(error.message);
 }
 

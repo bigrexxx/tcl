@@ -173,6 +173,7 @@ function AdminPage({ username, onSignOut }: { username: string; onSignOut: () =>
     bookings: { title: "Studio Bookings", sub: "Confirm Studios 25 reservations" },
     content: { title: "Content", sub: "Manage published stories and assets" },
     settings: { title: "Settings", sub: "Configure TCL workspace" },
+    history: { title: "History", sub: "Audit log and admin actions" },
   };
 
   return (

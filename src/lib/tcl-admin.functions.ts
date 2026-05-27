@@ -156,48 +156,6 @@ export const adminUpdateRegistrationStatus = createServerFn({ method: "POST" })
 
     await recordAdminHistory(actor, `${data.status} registration`, "registration", data.id, history);
     return { ok: true as const, emailSent: false, emailError: null };
-
-    // 2. Fetch the registration row
-    const { data: reg, error: fetchError } = await supabaseAdmin
-      .from("registrations")
-      .select("full_name, email, committee_name, approval_email_sent")
-      .eq("id", data.id)
-      .single();
-    if (fetchError || !reg) {
-      return { ok: true as const, emailSent: false, emailError: "Could not fetch registration" };
-    }
-
-    // 3. Send appropriate email
-    if (data.status === "approved") {
-      // Only send once
-      if (reg.approval_email_sent) {
-        return { ok: true as const, emailSent: false, emailError: null };
-      }
-
-      const { waGcLink } = await getSettings();
-      if (!waGcLink) {
-        return { ok: true as const, emailSent: false, emailError: "WhatsApp group link not configured in Settings" };
-      }
-
-      const tpl = buildApprovalEmail({ toName: reg.full_name, committeeName: reg.committee_name, waGcLink });
-      const result = await sendEmail({ to: reg.email, ...tpl });
-
-      if (result.ok) {
-        await supabaseAdmin
-          .from("registrations")
-          .update({ approval_email_sent: true, approval_email_sent_at: new Date().toISOString() })
-          .eq("id", data.id);
-      }
-      return { ok: true as const, emailSent: result.ok, emailError: result.error ?? null };
-    }
-
-    if (data.status === "declined") {
-      const tpl = buildDeclinedEmail({ toName: reg.full_name, committeeName: reg.committee_name });
-      const result = await sendEmail({ to: reg.email, ...tpl });
-      return { ok: true as const, emailSent: result.ok, emailError: result.error ?? null };
-    }
-
-    return { ok: true as const, emailSent: false, emailError: null };
   });
 
 // ─── Check application status (public — no admin password) ────────────────────
