@@ -514,7 +514,7 @@ function SuccessStep({ committeeName, waMessage }: { committeeName: string; waMe
         </div>
 
         <div style={{ marginTop: "1.5rem", display: "flex", flexDirection: "column", alignItems: "center", gap: "0.75rem" }}>
-          <Link to="/" className="btn-secondary">2190 Back to home</Link>
+          <Link to="/" className="btn-secondary">Back to home</Link>
           <Link to="/status" style={{ fontSize: "0.88rem", color: "#a855f7", textDecoration: "none", fontWeight: 600 }}>Check your application status →</Link>
         </div>
       </div>

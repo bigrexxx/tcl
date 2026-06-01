@@ -306,7 +306,7 @@ export const adminUpdateSettings = createServerFn({ method: "POST" })
           ga_measurement_id: data.gaMeasurementId,
           updated_at: new Date().toISOString(),
         },
-        { onConflict: ["id"] },
+        { onConflict: "id" },
       );
     if (error) throw new Error(error.message);
     await recordAdminHistory(actor, "updated settings", "settings", undefined, {
