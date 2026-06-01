@@ -40,7 +40,7 @@ async function sha256Hex(message: string): Promise<string> {
 }
 
 async function signPayload(payload: string): Promise<string> {
-  const secret = process.env.ADMIN_SESSION_SECRET ?? process.env.ADMIN_PASSWORD ?? "";
+  const secret = process.env.ADMIN_SESSION_SECRET;
   if (!secret) throw new Error("Admin session secret not configured. Set ADMIN_SESSION_SECRET in environment.");
   return sha256Hex(`${payload}.${secret}`);
 }
@@ -123,12 +123,11 @@ export async function recordAdminHistory(
   action: string,
   entity: string,
   entityId?: string,
-  details?: unknown,
+  details?: Json | null,
 ) {
-  const payload = details === undefined ? null : (details as unknown as Json);
   const { error } = await supabaseAdmin
     .from("admin_history")
-    .insert([{ actor, action, entity, entity_id: entityId ?? null, details: payload }]);
+    .insert([{ actor, action, entity, entity_id: entityId ?? null, details: details ?? null }]);
   if (error) throw new Error(error.message);
 }
 

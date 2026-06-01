@@ -294,17 +294,20 @@ export const adminUpdateSettings = createServerFn({ method: "POST" })
     const actor = await requireAdminAuth(request, data.password);
     const { error } = await supabaseAdmin
       .from("app_settings")
-      .update({
-        hourly_price_naira: data.hourlyPriceNaira,
-        half_day_price_naira: data.halfDayPriceNaira,
-        full_day_price_naira: data.fullDayPriceNaira,
-        podcast_price_naira: data.podcastPriceNaira,
-        admin_whatsapp: data.adminWhatsapp,
-        wa_gc_link: data.waGcLink,
-        ga_measurement_id: data.gaMeasurementId,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", 1);
+      .upsert(
+        {
+          id: 1,
+          hourly_price_naira: data.hourlyPriceNaira,
+          half_day_price_naira: data.halfDayPriceNaira,
+          full_day_price_naira: data.fullDayPriceNaira,
+          podcast_price_naira: data.podcastPriceNaira,
+          admin_whatsapp: data.adminWhatsapp,
+          wa_gc_link: data.waGcLink,
+          ga_measurement_id: data.gaMeasurementId,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: ["id"] },
+      );
     if (error) throw new Error(error.message);
     await recordAdminHistory(actor, "updated settings", "settings", undefined, {
       hourlyPriceNaira: data.hourlyPriceNaira,

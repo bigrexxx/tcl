@@ -4,6 +4,8 @@ import tailwindcss from "@tailwindcss/vite";
 import { cloudflare } from "@cloudflare/vite-plugin";
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 
+const buildTarget = process.env.BUILD_TARGET ?? process.env.TARGET ?? "vercel";
+
 export default defineConfig({
   plugins: [
     // tanstackStart includes TanStackRouterVite internally — do not add separately.
@@ -12,8 +14,8 @@ export default defineConfig({
     react(),
     tailwindcss(),
 
-    // Cloudflare Workers build — build-only, skipped in dev
-    ...(process.env.NODE_ENV === "production" ? [cloudflare()] : []),
+    // Only apply Cloudflare Workers packaging when explicitly requested.
+    ...(buildTarget === "cloudflare" ? [cloudflare()] : []),
   ],
 
   resolve: {
